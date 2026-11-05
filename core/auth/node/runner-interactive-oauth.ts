@@ -4,6 +4,7 @@ import type {
 } from "../challenge.js";
 import { findIssuerBindingFailure } from "../issuerBinding.js";
 import { issuerBindingFailureCopy } from "../oauthUx.js";
+import { OAuthCallbackError } from "./oauth-callback-error.js";
 import {
   createOAuthCallbackServer,
   type OAuthCallbackServer,
@@ -85,30 +86,15 @@ function stateOf(authorizationUrl: URL): string | undefined {
 }
 
 /**
- * The flow's failure message for an error the listener reported.
- *
- * A redirect error (`?error=…`) is text from the redirect's query string, so
- * it is labeled as the authorization server's words rather than passed off
- * as the Inspector's own diagnosis (#2847). Only the listener's `source`
- * marks a failure as ours — `error` itself is copied from the request, so a
- * redirect can carry any value there, `callback_error` included.
+ * The flow's failure message when the host's own `onCallback` rejects (the
+ * token exchange failed). A redirect error — the authorization server's
+ * answer — is an {@link OAuthCallbackError}, which owns its labeled message
+ * (#2847); the two must not be confused, because only one of them is ours.
  */
 function callbackErrorMessage(
   params: Parameters<OAuthErrorHandler>[0],
 ): string {
-  if (params.source === "callback") {
-    return params.error_description ?? "OAuth callback failed";
-  }
-  // Nothing the server said to label — `error` is required by the protocol,
-  // but a listener reporting an empty one must still produce a readable
-  // failure rather than "said: ".
-  if (!params.error && !params.error_description) {
-    return "OAuth error";
-  }
-  const said = params.error_description
-    ? `${params.error_description} (${params.error})`
-    : params.error;
-  return `OAuth authorization failed. The authorization server said: ${said}`;
+  return params.error_description ?? "OAuth callback failed";
 }
 
 /**
@@ -206,7 +192,14 @@ export async function runRunnerInteractiveOAuth(
           }
         },
         onError: (params) => {
-          flowReject(new Error(callbackErrorMessage(params)));
+          // Only the redirect is the authorization server's own answer. A
+          // failed exchange (`source: "callback"`) is our failure and is
+          // classified from its cause like any other operational error.
+          flowReject(
+            params.source === "redirect"
+              ? new OAuthCallbackError(params.error, params.error_description)
+              : new Error(callbackErrorMessage(params)),
+          );
         },
       }),
     );

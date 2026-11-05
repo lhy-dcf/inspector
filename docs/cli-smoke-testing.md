@@ -212,7 +212,7 @@ one-line `ErrorEnvelope` to **stderr**:
 | `0` | Success |
 | `1` | Usage / unexpected error (the catch-all) |
 | `2` | No MCP App found on the tool (`--app-info` probe) |
-| `3` | Server requires authentication (401/403, `WWW-Authenticate`, OAuth) |
+| `3` | Server requires authentication (401/403, `WWW-Authenticate`, OAuth), or the authorization server refused the flow (`oauth_error` — `access_denied`, `invalid_scope`, …; the envelope carries `error` and `error_description`) |
 | `4` | Server unreachable (DNS, connection refused, timeout, `fetch failed`) |
 | `5` | Tool error (`isError:true`, or the tool was not found) |
 | `6` | `--strict` found an error-severity schema portability problem |

@@ -3,6 +3,7 @@ import { awaitableError } from "./utils/awaitable-log.js";
 import { isUnauthorizedError } from "../auth/index.js";
 import { SecretStoreUnavailableError } from "../auth/node/secret-store.js";
 import { OAuthStateFileUnrecognizedError } from "../auth/node/oauth-persist-file.js";
+import { OAuthCallbackError } from "../auth/node/oauth-callback-error.js";
 import { HTTP_TOO_MANY_REQUESTS } from "../mcp/rateLimit.js";
 
 /**
@@ -12,7 +13,8 @@ import { HTTP_TOO_MANY_REQUESTS } from "../mcp/rateLimit.js";
  *  - 0: success
  *  - 1: usage / unexpected error (the catch-all; same as before this map)
  *  - 2: `--app-info` probe found no MCP App on the tool
- *  - 3: server requires authentication (401 / WWW-Authenticate / OAuth)
+ *  - 3: server requires authentication (401 / WWW-Authenticate / OAuth), or
+ *       the authorization server refused the flow (envelope `oauth_error`)
  *  - 4: server unreachable (DNS, connect refused, timeout, fetch failure)
  *  - 5: tool error (`tools/call` returned `isError:true`, or tool not found)
  *  - 6: `--strict` found an error-severity tool-schema portability finding
@@ -128,6 +130,16 @@ export interface ErrorEnvelope {
   retryAfter?: string;
   /** `retryAfter` as a delay in ms; absent when it did not parse. */
   retryAfterMs?: number;
+  /**
+   * The authorization server's RFC 6749 `error` code, verbatim
+   * (`access_denied`, `invalid_scope`, …). This field and the one below are
+   * present only on an `oauth_error` envelope (#2842), lifted from the
+   * redirect so a caller need not parse `message`: `code` names the failure
+   * class, these two carry what the server actually said.
+   */
+  error?: string;
+  /** The server's `error_description`, verbatim; absent when it sent none. */
+  error_description?: string;
 }
 
 /** The envelope fields that only a rate-limited failure carries. */
@@ -248,6 +260,15 @@ function redactEnvelope(envelope: ErrorEnvelope): ErrorEnvelope {
     ...(envelope.retryAfter !== undefined && {
       retryAfter: redactUrlsInText(envelope.retryAfter),
     }),
+    // Server-supplied text like `message`, so it earns the same guarantee;
+    // `error` is a short protocol token but is passed through the same scrub
+    // rather than trusted to be one.
+    ...(envelope.error !== undefined && {
+      error: redactUrlsInText(envelope.error),
+    }),
+    ...(envelope.error_description !== undefined && {
+      error_description: redactUrlsInText(envelope.error_description),
+    }),
   };
 }
 
@@ -337,6 +358,28 @@ function classifyUnredacted(
         code: "oauth_state_unrecognized",
         message,
         ...(cause !== undefined && { cause }),
+        ...(url !== undefined && { url }),
+      },
+    };
+  }
+
+  // An OAuth protocol error on the authorization server's redirect
+  // (`?error=…`) is a terminal answer, not a mistyped flag: the command line
+  // was fine. It keeps this map's auth exit — the same 3 that already carries
+  // the terminal `refresh_failed` / `no_stored_token` outcomes — while the
+  // envelope code says `oauth_error`, so a caller can tell "the server said
+  // no" from a genuine usage error without reading `message` (#2842).
+  if (error instanceof OAuthCallbackError) {
+    return {
+      exitCode: EXIT_CODES.AUTH_REQUIRED,
+      envelope: {
+        code: "oauth_error",
+        message,
+        ...(cause !== undefined && { cause }),
+        error: error.oauthError,
+        ...(error.oauthErrorDescription !== undefined && {
+          error_description: error.oauthErrorDescription,
+        }),
         ...(url !== undefined && { url }),
       },
     };
